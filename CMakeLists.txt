@@ -5,6 +5,6 @@ set(ENV{IDF_PATH} "${IDF_PATH}")
 
 include("${IDF_PATH}/tools/cmake/project.cmake")
 
-set(EXTRA_COMPONENT_DIRS "src")
+set(EXTRA_COMPONENT_DIRS "src" "sub")
 
 project(esp32-fps)

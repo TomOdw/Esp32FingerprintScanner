@@ -1,0 +1,3 @@
+[submodule "sub/FingerPrintModuleComponent/FingerPrintModule"]
+	path = sub/FingerPrintModuleComponent/FingerPrintModule
+	url = https://github.com/TomOdw/FingerPrintModule.git

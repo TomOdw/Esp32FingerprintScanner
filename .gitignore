@@ -56,16 +56,3 @@ dkms.conf
 
 # Build output
 build/*
-
-# IDF generated config (sdkconfig.defaults is committed, sdkconfig is not)
-sdkconfig
-
-# Toolchain binaries (downloaded by setup.cmake)
-tools/xtensa-esp-elf/*
-
-# esp-idf in selected version
-sub/esp-idf-.*
-
-# Python bytecode (from IDF monitor/esptool)
-__pycache__/
-*.pyc

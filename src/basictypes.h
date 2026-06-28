@@ -4,7 +4,7 @@
  *
  * @author     Tom Christ
  * @copyright  Copyright (c) 2026 Tom Christ; MIT License
- * @date       2026-06-0a7
+ * @date       2026-06-07
  *
  * @version    0.1  Initial Version
  */
@@ -22,9 +22,6 @@
 /*** Types                                                                    */
 /******************************************************************************/
 
-/**
- * @brief //TODO
- */
 typedef enum{
   RC_SUCCESS = 0,
   RC_ERROR,
@@ -36,6 +33,8 @@ typedef enum{
   RC_NOT_CONNECTED,
   RC_TIMEOUT,
   RC_PROTOCOL_ERROR,
+  RC_NO_MATCH,       /**< Fingerprint scan succeeded but no match found */
+  RC_NO_FINGER,      /**< No finger detected on sensor                  */
 }RC_t;
 
 #endif /* BASICTYPES_H_ */

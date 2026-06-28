@@ -1,8 +1,32 @@
 idf_component_register(
   SRCS
     "app.c"
+    "ceh/ceh.c"
+    "wdt/wdt.c"
+    "timer/timer.c"
+    "uart/uart.c"
+    "io/io.c"
+    "fps/fps.c"
+    "nvs/nvs.c"
+    "wifi/wifi.c"
+    "mqtt/mqtt.c"
+    "cli/cli.c"
+    "telnet/telnet.c"
 
   REQUIRES
+    freertos
+    nvs_flash
+    driver
+    esp_driver_uart
+    esp_driver_gpio
+    esp_wifi
+    esp_timer
+    esp_netif
+    lwip
+    esp_event
+    esp_system
+    log
+    finger_print_module
 
   INCLUDE_DIRS
     "."

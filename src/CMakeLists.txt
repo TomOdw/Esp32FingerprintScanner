@@ -7,11 +7,9 @@ idf_component_register(
     "uart/uart.c"
     "io/io.c"
     "fps/fps.c"
-    "nvs/nvs.c"
+    "nvs/nvs_app.c"
     "wifi/wifi.c"
     "mqtt/mqtt.c"
-    "cli/cli.c"
-    "telnet/telnet.c"
 
   REQUIRES
     freertos

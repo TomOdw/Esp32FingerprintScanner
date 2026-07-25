@@ -66,13 +66,6 @@ extern SemaphoreHandle_t g_fp_sense_sem;
 extern QueueHandle_t g_scan_queue;
 
 /**
- * @brief Byte queue aggregating input from UART and Telnet into cli_task.
- *
- * Depth: 256 bytes.
- */
-extern QueueHandle_t g_cli_input_queue;
-
-/**
  * @brief System state event group (EVT_* bits above).
  */
 extern EventGroupHandle_t g_sys_events;

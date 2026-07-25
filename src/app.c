@@ -21,22 +21,19 @@
 #include "freertos/semphr.h"
 #include "freertos/queue.h"
 #include "freertos/event_groups.h"
-#include "nvs_flash.h"
 #include "esp_log.h"
 
 #include "basictypes.h"
 #include "app_handles.h"
 #include "ceh/ceh.h"
 #include "wdt/wdt.h"
-#include "nvs/nvs.h"
+#include "nvs/nvs_app.h"
 #include "uart/uart.h"
 #include "io/io.h"
 #include "fps/fps.h"
 #include <fpm.h>
 #include "wifi/wifi.h"
 #include "mqtt/mqtt.h"
-#include "cli/cli.h"
-#include "telnet/telnet.h"
 #include "timer/timer.h"
 
 /******************************************************************************/
@@ -46,17 +43,12 @@
 #define APP_SCANNER_TASK_STACK   4096U
 #define APP_WIFI_TASK_STACK      3072U
 #define APP_MQTT_TASK_STACK      3072U
-#define APP_CLI_TASK_STACK       4096U
-#define APP_TELNET_TASK_STACK    3072U
 
 #define APP_SCANNER_TASK_PRIO    5U
 #define APP_WIFI_TASK_PRIO       6U
 #define APP_MQTT_TASK_PRIO       4U
-#define APP_CLI_TASK_PRIO        3U
-#define APP_TELNET_TASK_PRIO     3U
 
 #define APP_SCAN_QUEUE_DEPTH     4U
-#define APP_CLI_QUEUE_DEPTH      256U
 
 #define APP_SENSOR_BOOT_DELAY_MS 500U
 
@@ -69,7 +61,6 @@ static const char *TAG = "app";
 SemaphoreHandle_t  g_fpm_mutex        = NULL;
 SemaphoreHandle_t  g_fp_sense_sem     = NULL;
 QueueHandle_t      g_scan_queue       = NULL;
-QueueHandle_t      g_cli_input_queue  = NULL;
 EventGroupHandle_t g_sys_events       = NULL;
 
 /******************************************************************************/
@@ -88,19 +79,6 @@ void app_main(void)
   /* --- Phase 1: Early init (no LED available yet) --- */
   ceh_Init();
   wdt_Init();
-
-  esp_err_t nvs_err = nvs_flash_init();
-  if (nvs_err == ESP_ERR_NVS_NO_FREE_PAGES ||
-      nvs_err == ESP_ERR_NVS_NEW_VERSION_FOUND)
-  {
-    nvs_flash_erase();
-    nvs_err = nvs_flash_init();
-  }
-  if (nvs_err != ESP_OK)
-  {
-    ESP_LOGE(TAG, "nvs_flash_init failed: 0x%x", nvs_err);
-    ceh_Fatal(CEH_ERR_NVS_INIT);
-  }
 
   if (nvs_Init() != RC_SUCCESS)
   {
@@ -156,13 +134,6 @@ void app_main(void)
     ceh_Fatal(CEH_ERR_RESOURCE);
   }
 
-  g_cli_input_queue = xQueueCreate(APP_CLI_QUEUE_DEPTH, sizeof(uint8_t));
-  if (g_cli_input_queue == NULL)
-  {
-    ESP_LOGE(TAG, "xQueueCreate cli_input_queue failed");
-    ceh_Fatal(CEH_ERR_RESOURCE);
-  }
-
   g_sys_events = xEventGroupCreate();
   if (g_sys_events == NULL)
   {
@@ -200,16 +171,6 @@ void app_main(void)
                                APP_MQTT_TASK_STACK, NULL,
                                APP_MQTT_TASK_PRIO, NULL, 1);
   if (rc != pdPASS) { ESP_LOGE(TAG, "mqtt task create failed"); ceh_Fatal(CEH_ERR_RESOURCE); }
-
-  rc = xTaskCreatePinnedToCore(cli_Task, "cli",
-                               APP_CLI_TASK_STACK, NULL,
-                               APP_CLI_TASK_PRIO, NULL, 0);
-  if (rc != pdPASS) { ESP_LOGE(TAG, "cli task create failed"); ceh_Fatal(CEH_ERR_RESOURCE); }
-
-  rc = xTaskCreatePinnedToCore(telnet_Task, "telnet",
-                               APP_TELNET_TASK_STACK, NULL,
-                               APP_TELNET_TASK_PRIO, NULL, 0);
-  if (rc != pdPASS) { ESP_LOGE(TAG, "telnet task create failed"); ceh_Fatal(CEH_ERR_RESOURCE); }
 
   ESP_LOGI(TAG, "all tasks started");
   vTaskDelete(NULL);

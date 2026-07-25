@@ -1,7 +1,7 @@
 # Roadmap for Software Development of Esp32FingerprintScanner
 
 - [ ] Finish the relevant parts of the specifictaion: Fingerprint Module & CLI
-- [ ] Implement NVS
+- [X] Implement NVS
 - [ ] Implement CLI
 - [ ] Setup the basic software structure, supporting two modes.
 - [ ] Implement Setup mode with no telnet/wifi, just uart. Also no, first-run-mode

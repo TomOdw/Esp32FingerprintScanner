@@ -1,13 +1,15 @@
 # Roadmap for Software Development of Esp32FingerprintScanner
 
-- [ ] Finish the relevant parts of the specifictaion: Fingerprint Module & CLI
+- [ ] Finish the relevant parts of the specifictaion: Fingerprint Module Normal Mode
 - [X] Implement NVS
-- [ ] Implement CLI
-- [ ] Setup the basic software structure, supporting two modes.
-- [ ] Implement Setup mode with no telnet/wifi, just uart. Also no, first-run-mode
-- [ ] Test Setup mode so far.
-- [ ] Implement Wifi and telnet, test.
-- [ ] Specifiy and implement CLI First-Run-mode.
+- [X] Implement Webpage Interface
+- [X] Setup the basic software structure, supporting two modes.
+- [X] Implement Setup mode.
+- [ ] Test Setup mode so far. (needs real hardware — see doc/specification.md's
+      Webpage Interface verification checklist)
+- [X] Implement Webpage.
+- [X] Implement First-Run-mode. (as part of the Webpage Interface, not a
+      separate CLI — the roadmap's "CLI" wording predates this decision)
 - [ ] Implement Mqtt
 - [ ] Specify and Implement Normal-Mode
 - [ ] Test the implementation

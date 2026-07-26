@@ -10,6 +10,8 @@ idf_component_register(
     "nvs/nvs_app.c"
     "wifi/wifi.c"
     "mqtt/mqtt.c"
+    "mode/mode.c"
+    "webpage/webpage.c"
 
   REQUIRES
     freertos
@@ -23,9 +25,16 @@ idf_component_register(
     lwip
     esp_event
     esp_system
+    esp_http_server
+    esp_rom
     log
     finger_print_module
 
   INCLUDE_DIRS
     "."
+
+  EMBED_TXTFILES
+    "webpage/assets/index.html"
+    "webpage/assets/style.css"
+    "webpage/assets/app.js"
 )

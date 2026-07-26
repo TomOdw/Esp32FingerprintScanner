@@ -35,6 +35,8 @@
 #include "wifi/wifi.h"
 #include "mqtt/mqtt.h"
 #include "timer/timer.h"
+#include "mode/mode.h"
+#include "webpage/webpage.h"
 
 /******************************************************************************/
 /*** Macros and Defines                                                       */
@@ -43,10 +45,12 @@
 #define APP_SCANNER_TASK_STACK   4096U
 #define APP_WIFI_TASK_STACK      3072U
 #define APP_MQTT_TASK_STACK      3072U
+#define APP_WEBPAGE_START_STACK  2048U
 
 #define APP_SCANNER_TASK_PRIO    5U
 #define APP_WIFI_TASK_PRIO       6U
 #define APP_MQTT_TASK_PRIO       4U
+#define APP_WEBPAGE_START_PRIO   3U
 
 #define APP_SCAN_QUEUE_DEPTH     4U
 
@@ -68,6 +72,7 @@ EventGroupHandle_t g_sys_events       = NULL;
 /******************************************************************************/
 
 static void scanner_task(void *pvParam);
+static void webpage_start_task(void *pvParam);
 static void ceh_led_callback(ceh_err_t i_err);
 
 /******************************************************************************/
@@ -85,6 +90,8 @@ void app_main(void)
     ESP_LOGE(TAG, "nvs_Init failed");
     ceh_Fatal(CEH_ERR_NVS_INIT);
   }
+
+  app_mode_t boot_mode = app_mode_Decide(); /* SWS-MOD002/003 */
 
   /* --- Phase 2: Init IO --- */
   g_fp_sense_sem = xSemaphoreCreateBinary();
@@ -118,6 +125,11 @@ void app_main(void)
 
   ceh_RegisterLed(ceh_led_callback);
 
+  if (boot_mode == APP_MODE_SETUP)
+  {
+    app_mode_EnterSetup(); /* SWS-MOD104: consume the setup-enter flag now */
+  }
+
   /* --- Phase 4: Create FreeRTOS resources --- */
   g_fpm_mutex = xSemaphoreCreateBinary();
   if (g_fpm_mutex == NULL)
@@ -148,29 +160,48 @@ void app_main(void)
     ceh_Fatal(CEH_ERR_RESOURCE);
   }
 
-  if (cli_Init() != RC_SUCCESS)
-  {
-    ESP_LOGE(TAG, "cli_Init failed");
-    ceh_Fatal(CEH_ERR_RESOURCE);
-  }
+  wifi_SetBootMode((boot_mode == APP_MODE_SETUP) ? WIFI_BOOT_AP : WIFI_BOOT_STA);
 
   /* --- Phase 6: Create tasks --- */
   BaseType_t rc;
-
-  rc = xTaskCreatePinnedToCore(scanner_task, "scanner",
-                               APP_SCANNER_TASK_STACK, NULL,
-                               APP_SCANNER_TASK_PRIO, NULL, 0);
-  if (rc != pdPASS) { ESP_LOGE(TAG, "scanner task create failed"); ceh_Fatal(CEH_ERR_RESOURCE); }
 
   rc = xTaskCreatePinnedToCore(wifi_Task, "wifi",
                                APP_WIFI_TASK_STACK, NULL,
                                APP_WIFI_TASK_PRIO, NULL, 1);
   if (rc != pdPASS) { ESP_LOGE(TAG, "wifi task create failed"); ceh_Fatal(CEH_ERR_RESOURCE); }
 
-  rc = xTaskCreatePinnedToCore(mqtt_Task, "mqtt",
-                               APP_MQTT_TASK_STACK, NULL,
-                               APP_MQTT_TASK_PRIO, NULL, 1);
-  if (rc != pdPASS) { ESP_LOGE(TAG, "mqtt task create failed"); ceh_Fatal(CEH_ERR_RESOURCE); }
+  if (boot_mode == APP_MODE_NORMAL)
+  {
+    rc = xTaskCreatePinnedToCore(scanner_task, "scanner",
+                                 APP_SCANNER_TASK_STACK, NULL,
+                                 APP_SCANNER_TASK_PRIO, NULL, 0);
+    if (rc != pdPASS) { ESP_LOGE(TAG, "scanner task create failed"); ceh_Fatal(CEH_ERR_RESOURCE); }
+
+    rc = xTaskCreatePinnedToCore(mqtt_Task, "mqtt",
+                                 APP_MQTT_TASK_STACK, NULL,
+                                 APP_MQTT_TASK_PRIO, NULL, 1);
+    if (rc != pdPASS) { ESP_LOGE(TAG, "mqtt task create failed"); ceh_Fatal(CEH_ERR_RESOURCE); }
+  }
+  else /* APP_MODE_SETUP: no scanning, no mqtt (SWS-MOD105) */
+  {
+    /* SWS-MOD109: three-stage Setup-Mode boot LED. Diagnostic State 1
+     * (flashing) while the AP/webpage are still coming up; webpage_start_task
+     * switches to State 2 (breathing) once the webpage is actually serving
+     * but no client has connected yet, then to State 0 (solid) once a
+     * client has actually been assigned an IP by our AP's DHCP server —
+     * that's the point at which the user is confirmed connected and setup
+     * can proceed. */
+    fps_SetLed(FPM_LED_DIAG_1);
+
+    webpage_mode_t wp_mode = app_mode_HasAdminFingerprint()
+                                ? WEBPAGE_MODE_NORMAL_SETUP
+                                : WEBPAGE_MODE_FIRST_RUN; /* SWS-MOD108 */
+
+    rc = xTaskCreatePinnedToCore(webpage_start_task, "webpage_start",
+                                 APP_WEBPAGE_START_STACK, (void *)(uintptr_t)wp_mode,
+                                 APP_WEBPAGE_START_PRIO, NULL, 1);
+    if (rc != pdPASS) { ESP_LOGE(TAG, "webpage start task create failed"); ceh_Fatal(CEH_ERR_RESOURCE); }
+  }
 
   ESP_LOGI(TAG, "all tasks started");
   vTaskDelete(NULL);
@@ -258,4 +289,35 @@ static void ceh_led_callback(ceh_err_t i_err)
       fps_SetLed(FPM_LED_ERROR_1);
       break;
   }
+}
+
+/**
+ * Waits for AP mode to be up, then starts the Setup-Mode webpage interface.
+ * Runs once and deletes itself; the httpd server it starts keeps running
+ * out of its own internal task context.
+ */
+static void webpage_start_task(void *pvParam)
+{
+  webpage_mode_t wp_mode = (webpage_mode_t)(uintptr_t)pvParam;
+
+  xEventGroupWaitBits(g_sys_events, EVT_WIFI_AP_MODE, pdFALSE, pdFALSE, portMAX_DELAY);
+
+  if (webpage_Init(wp_mode) != RC_SUCCESS)
+  {
+    ESP_LOGE(TAG, "webpage_Init failed");
+    ceh_Fatal(CEH_ERR_RESOURCE);
+  }
+
+  /* SWS-MOD109: AP is up and the webpage is now actually serving requests
+   * — Setup-Mode is ready, switch from Diagnostic State 1 to State 2 and
+   * wait for a client to actually connect and get an IP before going
+   * solid. */
+  fps_SetLed(FPM_LED_DIAG_2);
+
+  xEventGroupWaitBits(g_sys_events, EVT_WIFI_AP_CLIENT_CONNECTED, pdFALSE, pdFALSE,
+                       portMAX_DELAY);
+
+  fps_SetLed(FPM_LED_DIAG_0);
+
+  vTaskDelete(NULL);
 }

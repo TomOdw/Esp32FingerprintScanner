@@ -161,6 +161,27 @@ RC_t nvs_UserGetName(uint8_t i_uuid, char *o_buf, size_t i_len);
 RC_t nvs_UserSetName(uint8_t i_uuid, const char *i_name);
 RC_t nvs_UserDelete(uint8_t i_uuid);
 
+/** Maximum number of user entries nvs_UserList() can return. */
+#define NVS_USER_MAX_COUNT  127U
+
+/** One entry returned by nvs_UserList(). */
+typedef struct
+{
+  uint8_t uuid;
+  char    name[NVS_USER_NAME_MAX_LEN];
+} nvs_user_entry_t;
+
+/**
+ * @brief List all registered users (populated UUID slots only).
+ *
+ * @param[out] o_entries      Output array, capacity i_max_entries.
+ * @param[in]  i_max_entries  Capacity of o_entries (use NVS_USER_MAX_COUNT).
+ * @param[out] o_count        Number of entries written.
+ *
+ * @return RC_SUCCESS or RC_INVALID_ARG.
+ */
+RC_t nvs_UserList(nvs_user_entry_t *o_entries, size_t i_max_entries, size_t *o_count);
+
 /******************************************************************************/
 /*** API Functions — general namespace                                       */
 /******************************************************************************/
@@ -178,6 +199,20 @@ RC_t nvs_GeneralSetRebootMinutes(uint32_t i_minutes);
  */
 RC_t nvs_GeneralGetSetupFlag(bool *o_flag);
 RC_t nvs_GeneralSetSetupFlag(bool i_flag);
+
+/**
+ * @brief Admin/master fingerprint enrolled flag (SWS-MOD108).
+ *
+ * Set once, at the end of a successful First-Run-Mode enrollment (see
+ * webpage.c). This is the sole source of truth for "does an admin
+ * fingerprint exist" — mode.c no longer scans the sensor's fingerprint
+ * library at boot to answer that question. Cleared implicitly whenever the
+ * whole NVS partition is erased (factory reset), which always happens
+ * together with erasing the sensor's fingerprint library (see
+ * webpage.c's Reset Device flow) so the two stores cannot drift apart.
+ */
+RC_t nvs_GeneralGetAdminEnrolled(bool *o_flag);
+RC_t nvs_GeneralSetAdminEnrolled(bool i_flag);
 
 /******************************************************************************/
 /*** API Functions — error FIFO                                              */

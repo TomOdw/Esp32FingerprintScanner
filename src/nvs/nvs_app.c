@@ -51,8 +51,9 @@ static const char *KEY_LW_TOPIC    = "lw_topic";
 static const char *KEY_LW_MSG      = "lw_msg";
 
 /* general keys */
-static const char *KEY_REBOOT_MIN  = "reboot_min";
-static const char *KEY_SETUP_FLAG  = "setup_flag";
+static const char *KEY_REBOOT_MIN     = "reboot_min";
+static const char *KEY_SETUP_FLAG     = "setup_flag";
+static const char *KEY_ADMIN_ENROLLED = "admin_ok";
 
 /* errors keys */
 static const char *KEY_ERR_HEAD    = "err_head";
@@ -453,6 +454,38 @@ RC_t nvs_UserDelete(uint8_t i_uuid)
   return (err == ESP_OK) ? RC_SUCCESS : RC_ERROR;
 }
 
+RC_t nvs_UserList(nvs_user_entry_t *o_entries, size_t i_max_entries, size_t *o_count)
+{
+  if (o_entries == NULL || o_count == NULL) return RC_INVALID_ARG;
+
+  size_t count = 0;
+  nvs_iterator_t it = NULL;
+  esp_err_t err = nvs_entry_find_in_handle(s_users_h, NVS_TYPE_STR, &it);
+
+  while (err == ESP_OK && it != NULL && count < i_max_entries)
+  {
+    nvs_entry_info_t info;
+    nvs_entry_info(it, &info);
+
+    unsigned uuid = 0;
+    if (sscanf(info.key, "u%03u", &uuid) == 1 && uuid >= 1U && uuid <= 127U)
+    {
+      o_entries[count].uuid = (uint8_t)uuid;
+      size_t len = sizeof(o_entries[count].name);
+      if (nvs_get_str(s_users_h, info.key, o_entries[count].name, &len) == ESP_OK)
+      {
+        count++;
+      }
+    }
+
+    err = nvs_entry_next(&it);
+  }
+  nvs_release_iterator(it);
+
+  *o_count = count;
+  return RC_SUCCESS;
+}
+
 /******************************************************************************/
 /*** general namespace                                                       */
 /******************************************************************************/
@@ -477,6 +510,17 @@ RC_t nvs_GeneralGetSetupFlag(bool *o_flag)
 RC_t nvs_GeneralSetSetupFlag(bool i_flag)
 {
   return set_bool(s_general_h, KEY_SETUP_FLAG, i_flag);
+}
+
+RC_t nvs_GeneralGetAdminEnrolled(bool *o_flag)
+{
+  if (o_flag == NULL) return RC_INVALID_ARG;
+  return get_bool(s_general_h, KEY_ADMIN_ENROLLED, false, o_flag);
+}
+
+RC_t nvs_GeneralSetAdminEnrolled(bool i_flag)
+{
+  return set_bool(s_general_h, KEY_ADMIN_ENROLLED, i_flag);
 }
 
 /******************************************************************************/

@@ -31,7 +31,29 @@
 
 #define UART_FPM_NUM              UART_NUM_2
 #define UART_FPM_RX_BUF           1024U
-#define UART_FPM_READ_TIMEOUT_MS  500U
+
+/**
+ * @brief Per-byte-wait timeout for uart_FpmRead().
+ *
+ * r503_pkg_receive() (sub/finger_print_module) treats any single
+ * uart_read_bytes() call that returns zero bytes as a hard, immediate
+ * R503_RC_ERR_UART_RX — it does not retry a slow-but-eventually-arriving
+ * response, it just fails. A 1:N search (PS_Search) has to run real
+ * internal processing against the sensor's whole stored template library
+ * before it sends back the first response byte, unlike simpler commands
+ * (GenImg, LED control, handshake) which respond almost immediately —
+ * this was previously 500ms, which was observed on real hardware to
+ * intermittently be too short specifically for search responses
+ * (enrollment, which never searches, worked fine at 500ms; Reset
+ * Device's admin verification, which does search, failed on effectively
+ * every attempt with an ERROR/NO_MATCH pattern consistent with the
+ * search response sometimes arriving just past the deadline). Generous
+ * on purpose: this only affects how long a genuine communication failure
+ * takes to be detected, not the success path, and is still comfortably
+ * inside the overall multi-second budgets callers retry within
+ * (ENROLL_STEP_TIMEOUT_MS, RESET_SCAN_TIMEOUT_MS in webpage.c).
+ */
+#define UART_FPM_READ_TIMEOUT_MS  2000U
 
 /******************************************************************************/
 /*** API function implementation                                              */

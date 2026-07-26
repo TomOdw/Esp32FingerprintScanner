@@ -31,6 +31,42 @@
 #include "fpm.h"   /* FingerPrintModule library */
 
 /******************************************************************************/
+/*** Defines                                                                  */
+/******************************************************************************/
+
+/** Poll interval used internally by fps_EnrollStep()/fps_ScanStep(). */
+#define FPS_POLL_INTERVAL_MS  300U
+
+/**
+ * @brief Consecutive NO_MATCH results fps_ScanStep() requires before
+ *        treating the outcome as a definitive non-match.
+ *
+ * Each attempt is a fresh, independent image capture + 1:N search, and
+ * captures of the very same finger vary in quality from one instant to the
+ * next (light contact, slight shift, moisture) — a single NO_MATCH does not
+ * reliably mean "wrong finger", only "this particular frame didn't match".
+ * Requiring a short run of fresh, real NO_MATCH results (rather than acting
+ * on the first one) filters out that per-frame variance without pretending
+ * to detect anything that isn't really being measured.
+ */
+#define FPS_SCAN_NO_MATCH_CONFIRM  3U
+
+/** Capacity needed for a full fps_raw_list() dump (0..FPM_META_MAX_ID). */
+#define FPS_MAX_TEMPLATES     ((uint16_t)(FPM_META_MAX_ID + 1))
+
+/**
+ * @brief Reserved metadata values identifying the admin/master fingerprint
+ *        (SWS-WP201). Deliberately outside the regular user range: UUID 0
+ *        is "invalid/empty" in the users NVS table (SWS-NVS003) and
+ *        finger_id 15 is outside the 0-9 range used for real fingers
+ *        (SWS-WP104.3), so the admin fingerprint is never confused with a
+ *        regular enrolled user.
+ */
+#define FPS_ADMIN_UUID           0U
+#define FPS_ADMIN_FINGER_ID     15U
+#define FPS_ADMIN_FUNCTION_CODE  0U
+
+/******************************************************************************/
 /*** API Functions — lifecycle                                                */
 /******************************************************************************/
 
@@ -84,7 +120,11 @@ RC_t fps_Scan(uint16_t *o_id, uint16_t *o_score);
 /**
  * @brief Set the sensor LED state.
  *
- * Acquires the mutex internally. Safe to call from any task.
+ * Acquires the mutex internally. Safe to call from any task. Idempotent:
+ * if @p i_state is already the last state set, this is a no-op — the
+ * sensor animates breathe/flash/blink modes on its own once commanded, so
+ * callers may call this unconditionally on every loop iteration/request
+ * without restarting/glitching an in-progress animation.
  *
  * @param[in] state  Desired LED state.
  *
@@ -172,5 +212,59 @@ RC_t fps_raw_delete_all(void);
  * @return RC_SUCCESS or RC_ERROR.
  */
 RC_t fps_raw_delete_by_uuid(uint8_t uuid);
+
+/******************************************************************************/
+/*** API Functions — bounded-poll (for request/response callers, e.g. HTTP)  */
+/******************************************************************************/
+
+/**
+ * @brief Bounded-retry one enrollment scan (SWS-FPM102).
+ *
+ * A pure capture-retry primitive, matching fps_ScanStep()'s shape: it does
+ * NOT wait for a finger to be present first, does not touch the LED, and
+ * does not wait for the finger to be lifted afterward. Presence-detection
+ * (io_WaitFingerPresent(), in io.c) and all LED sequencing are the
+ * caller's responsibility (webpage.c) — this separation lets the caller
+ * show a genuine "scanning" LED state for exactly the window this call is
+ * actually active, and lets it decide whether this is the very last
+ * capture of the whole enrollment (which goes straight to a final success
+ * indication instead of the routine per-capture one).
+ *
+ * @param[in] i_scan_num   1 for the first scan, 2 for the second.
+ * @param[in] i_timeout_ms Time budget to retry the capture itself.
+ *
+ * @return RC_SUCCESS (scan captured) or RC_TIMEOUT.
+ */
+RC_t fps_EnrollStep(uint8_t i_scan_num, uint32_t i_timeout_ms);
+
+/**
+ * @brief Commit a completed 2-scan enrollment and tag it with metadata.
+ *
+ * Call once after two successful fps_EnrollStep() calls (scan_num 1, then
+ * 2). Wraps fps_EnrollCommit() + fps_raw_write_meta() as one mutex-held
+ * operation so a caller can never commit without tagging.
+ *
+ * @param[in]  meta  Metadata to store for the new slot.
+ * @param[out] o_id  Assigned fingerprint slot ID.
+ *
+ * @return RC_SUCCESS or RC_ERROR.
+ */
+RC_t fps_EnrollCommitAndTag(const fpm_fingerprint_meta_t *meta, uint16_t *o_id);
+
+/**
+ * @brief Bounded-poll a 1:N identification scan.
+ *
+ * Same fail-fast-without-a-finger caveat as fps_EnrollStep(); retries
+ * fps_Scan() every FPS_POLL_INTERVAL_MS until a definitive result (match
+ * or no-match) or i_timeout_ms elapses.
+ *
+ * @param[in]  i_timeout_ms Overall time budget to wait for a finger.
+ * @param[out] o_id         Matched fingerprint slot ID (valid on RC_SUCCESS).
+ * @param[out] o_score      Match confidence score (valid on RC_SUCCESS).
+ *
+ * @return RC_SUCCESS (match), RC_NO_MATCH (scanned but no match), or
+ *         RC_TIMEOUT (no finger presented within i_timeout_ms).
+ */
+RC_t fps_ScanStep(uint32_t i_timeout_ms, uint16_t *o_id, uint16_t *o_score);
 
 #endif /* FPS_H_ */

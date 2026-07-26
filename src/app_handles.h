@@ -38,6 +38,10 @@
 /** Fatal error signalled; reboot imminent */
 #define EVT_CEH_FATAL       ((EventBits_t)(1U << 3))
 
+/** A client device has been assigned an IP by the ESP32's own AP (Setup-Mode
+ *  DIAG LED confirmation — see SWS-MOD109) */
+#define EVT_WIFI_AP_CLIENT_CONNECTED ((EventBits_t)(1U << 4))
+
 /******************************************************************************/
 /*** Shared FreeRTOS handles                                                  */
 /******************************************************************************/

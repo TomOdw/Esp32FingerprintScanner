@@ -26,21 +26,21 @@
 /******************************************************************************/
 
 /**
- * @brief FP sense input, active HIGH.
+ * @brief FP sense input, active LOW, wired directly to the R503's own
+ *        TOUCH output (no external buffer stage).
  *
- * The R503's own TOUCH output is active LOW, but it is not connected to
- * this GPIO directly: it drives an NPN transistor buffer stage (base
- * resistor + base pull-down + collector pull-up to 3.3V, matching the
- * sensor module's own reference circuit) instead of the GPIO directly.
- * Wiring the sensor's output straight into this GPIO caused real,
- * oscilloscope-confirmed disturbances on the sense line specifically
- * while this pin was being actively polled — an unbuffered connection
- * apparently couldn't tolerate that. The buffer stage fixed it, at the
- * cost of inverting the logic level: idle reads LOW, a finger reads HIGH.
- * Configured as a rising-edge interrupt input accordingly. The ISR gives
- * g_fp_sense_sem to wake scanner_task.
+ * Verified with an oscilloscope: idle reads 3.3V, a finger pulls the line
+ * to 0V. An external transistor buffer stage was tried at one point,
+ * based on disturbances observed while this pin was actively polled — but
+ * those disturbances were later traced to a combination of an
+ * (since-removed) busy-wait polling loop and a floating-pin artifact that
+ * only appeared while the wire was disconnected for testing, not to the
+ * direct connection itself. The buffer was removed once the real causes
+ * (busy-wait polling, and separately, a too-short UART read timeout for
+ * search responses — see uart.c) were fixed. Configured as a falling-edge
+ * interrupt input. The ISR gives g_fp_sense_sem to wake scanner_task.
  */
-#define IO_PIN_FP_SENSE    34
+#define IO_PIN_FP_SENSE    26
 
 /** Interval between polls in wait_for_level(). Each poll is a plain
  *  vTaskDelay() sleep, not a busy-wait, so this stays essentially idle
@@ -51,10 +51,9 @@
  * @brief wait_for_level()'s debounce: the pin must read the wanted level
  *        on this many consecutive polls before it's trusted — i.e. it
  *        must hold for at least (IO_FP_SENSE_STABLE_COUNT - 1) *
- *        IO_FP_SENSE_POLL_MS. Rejects brief contact bounce without
- *        needing to be any longer than that: with the buffer stage in
- *        place, the level is clean and steady in both directions with no
- *        finger movement, on real hardware.
+ *        IO_FP_SENSE_POLL_MS. Rejects brief contact bounce without needing
+ *        to be any longer than that: the level is clean and steady in
+ *        both directions with no finger movement, on real hardware.
  */
 #define IO_FP_SENSE_STABLE_COUNT   3U   /* ~60ms */
 
@@ -78,17 +77,16 @@ static RC_t wait_for_level(bool i_want_present, TickType_t i_deadline);
 
 RC_t io_Init(void)
 {
-  /* FP sense pin: input, rising-edge interrupt (active HIGH — see
-   * IO_PIN_FP_SENSE above). No internal pull needed or wanted: the
-   * transistor buffer stage already provides a strong, low-impedance
-   * drive in both states (transistor ON pulls it low, the external
-   * collector pull-up takes it high otherwise). */
+  /* FP sense pin: input, falling-edge interrupt (active LOW — see
+   * IO_PIN_FP_SENSE above). No internal pull needed or wanted: the sensor
+   * drives this pin push-pull in both states, and no external pull
+   * resistor should be added either. */
   const gpio_config_t sense_cfg = {
     .pin_bit_mask = (1ULL << IO_PIN_FP_SENSE),
     .mode         = GPIO_MODE_INPUT,
     .pull_up_en   = GPIO_PULLUP_DISABLE,
     .pull_down_en = GPIO_PULLDOWN_DISABLE,
-    .intr_type    = GPIO_INTR_POSEDGE,
+    .intr_type    = GPIO_INTR_NEGEDGE,
   };
   if (gpio_config(&sense_cfg) != ESP_OK)
   {
@@ -164,7 +162,7 @@ static bool read_raw_present(void)
   static bool s_last_logged  = false;
   static bool s_have_logged  = false;
 
-  bool present = (gpio_get_level(IO_PIN_FP_SENSE) != 0); /* active HIGH */
+  bool present = (gpio_get_level(IO_PIN_FP_SENSE) == 0); /* active LOW */
 
   if (!s_have_logged || present != s_last_logged)
   {

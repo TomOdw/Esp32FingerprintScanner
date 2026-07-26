@@ -36,8 +36,8 @@
  * @brief Initialize GPIO.
  *
  * - Drives the sensor power pin HIGH to power up the sensor.
- * - Configures the FP sense pin as a rising-edge interrupt input (active
- *   HIGH via an external transistor buffer stage — see io.c).
+ * - Configures the FP sense pin as a falling-edge interrupt input
+ *   (active LOW, verified by oscilloscope — see io.c).
  * - Registers the ISR that gives g_fp_sense_sem.
  *
  * g_fp_sense_sem must be created by app_main before calling this function.

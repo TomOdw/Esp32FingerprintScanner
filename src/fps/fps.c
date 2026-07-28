@@ -17,8 +17,33 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "freertos/queue.h"
 #include "esp_log.h"
+#include "esp_timer.h"
+#include "esp_system.h"
 #include "app_handles.h"
+
+#include "io/io.h"
+#include "wdt/wdt.h"
+#include "nvs/nvs_app.h"
+#include "mqtt/mqtt.h"
+
+/******************************************************************************/
+/*** Defines                                                                  */
+/******************************************************************************/
+
+/** Generous enough to cover a full scan session: io_WaitFingerPresent's
+ *  10s follow-up window plus scan/result-display time. */
+#define FPS_SCAN_TASK_WDT_TIMEOUT_MS  15000U
+
+/** How long a scan result LED (SCAN_SUCCESS/SCAN_FAILED) stays shown
+ *  before the task moves on (SWS-FPM202/104) — matches webpage.c's
+ *  RESULT_DISPLAY_MS for a consistent feel between Setup- and Normal-Mode. */
+#define FPS_RESULT_DISPLAY_MS         2000U
+
+/** SWS-FPM202: how long fps_ScanTask() polls for a same-session follow-up
+ *  scan before reverting to idle. */
+#define FPS_POST_SCAN_TIMEOUT_MS      10000U
 
 /******************************************************************************/
 /*** Variables                                                                */
@@ -31,7 +56,7 @@ static const char *TAG = "fps";
  *
  * The sensor keeps animating a breathe/flash/blink mode on its own once
  * commanded — it does not need (or want) the command repeated. Callers
- * like scanner_task and the Setup-Mode enroll wizard call fps_SetLed()
+ * like fps_ScanTask and the Setup-Mode enroll wizard call fps_SetLed()
  * on every loop iteration/request regardless of whether the state
  * actually changed; without this cache, each redundant call restarts the
  * animation from scratch, which is visible as a stutter (e.g. the
@@ -286,6 +311,158 @@ RC_t fps_ScanStep(uint32_t i_timeout_ms, uint16_t *o_id, uint16_t *o_score)
 
   fps_Unlock();
   return (rc == RC_SUCCESS || rc == RC_NO_MATCH) ? rc : RC_TIMEOUT;
+}
+
+/******************************************************************************/
+/*** API function implementation — Normal-Mode scan task                     */
+/******************************************************************************/
+
+void fps_ScanTask(void *pvParam)
+{
+  (void)pvParam;
+  wdt_RegisterTask(FPS_SCAN_TASK_WDT_TIMEOUT_MS);
+
+  for (;;)
+  {
+    /* Normal-Mode baseline (SWS-FPM202): idle, off, blocked on the
+       FP-sense GPIO interrupt's wake signal — no CPU spent while idle.
+       This can legitimately last minutes or hours between scans (nobody
+       touching the sensor is not a hang), so wait in short bounded
+       chunks and pet the watchdog between them rather than blocking on
+       the semaphore indefinitely — an indefinite block would starve
+       wdt_Reset() and trip the software watchdog the very first time no
+       finger is presented within FPS_SCAN_TASK_WDT_TIMEOUT_MS of the
+       previous reset. */
+    fps_SetLed(FPM_LED_OFF);
+
+    /* A scan/capture attempt can itself briefly drive the sense pin the
+       same way a real touch does (see io_WaitFingerPresent()'s own
+       comment in io.c) — so by the time a session ends, g_fp_sense_sem
+       may already be sitting "given" from that residual activity, or
+       from a real touch that arrived while this task was still busy
+       handling the previous one, not from a genuine new touch. Trusting
+       that stale give here would immediately re-trigger another scan
+       attempt against an empty sensor, which itself re-toggles the pin
+       and re-arms the semaphore again — an infinite loop that never
+       actually reaches idle. Drain any such pending give before
+       committing to the idle wait below. */
+    xSemaphoreTake(g_fp_sense_sem, 0);
+
+    while (xSemaphoreTake(g_fp_sense_sem, pdMS_TO_TICKS(1000)) != pdTRUE)
+    {
+      wdt_Reset();
+    }
+    wdt_Reset();
+
+    bool session_active = true;
+    while (session_active)
+    {
+      /* Attempt the scan directly — the wake itself already means a
+         finger just made contact, so showing "awaiting finger" first
+         would just be a visible glitch for something that already
+         happened (SWS-FPM202). */
+      uint16_t fp_id   = 0U;
+      uint16_t score   = 0U;
+      RC_t     rc      = RC_ERROR;
+      bool     matched = false;
+
+      if (fps_Lock() == RC_SUCCESS)
+      {
+        rc = fps_Scan(&fp_id, &score);
+        fps_Unlock();
+      }
+
+      if (rc == RC_SUCCESS)
+      {
+        matched = true;
+        fpm_fingerprint_meta_t meta = {0};
+        fps_Lock();
+        fps_raw_read_meta(fp_id, &meta);
+        fps_Unlock();
+
+        if (meta.finger_id == FPS_ADMIN_FINGER_ID)
+        {
+          /* SWS-FPM204: admin/master fingerprint scanned during Normal-Mode
+             operation — re-enter Setup-Mode instead of publishing a scan
+             result (SWS-FPM203/SWS-MQT04 do not apply to this match). Not
+             routed through the Central Error Handler: this isn't an error
+             condition (mirrors SWS-WDT002's scheduled reboot). */
+          ESP_LOGI(TAG, "admin fingerprint scanned; re-entering Setup-Mode");
+          fps_SetLed(FPM_LED_OP_SUCCESS);
+          vTaskDelay(pdMS_TO_TICKS(FPS_RESULT_DISPLAY_MS));
+          nvs_GeneralSetSetupFlag(true);
+
+          /* esp_restart() below tears down WiFi mid-flight, which fires
+             the normal WIFI_EVENT_STA_DISCONNECTED / MQTT_EVENT_DISCONNECTED
+             handlers — those can't otherwise tell "intentional reboot in
+             progress" apart from a real connectivity loss, and would log
+             a spurious non-fatal CEH entry (SWS-CEH003) for what is
+             actually expected, deliberate behaviour. Both handlers gate
+             their logging on these exact bits, so clearing them first is
+             enough to make them correctly skip it. */
+          xEventGroupClearBits(g_sys_events, EVT_WIFI_CONNECTED | EVT_MQTT_CONNECTED);
+          esp_restart();
+        }
+
+        mqtt_scan_event_t event = {
+          .fp_id         = fp_id,
+          .score         = score,
+          .uuid          = meta.uuid,
+          .finger_id     = meta.finger_id,
+          .function_code = meta.function_code,
+          .matched       = true,
+          .timestamp_us  = esp_timer_get_time(),
+        };
+        nvs_UserGetName(meta.uuid, event.name, sizeof(event.name));
+        xQueueSend(g_scan_queue, &event, 0);
+
+        fps_SetLed(FPM_LED_SCAN_SUCCESS);
+      }
+      else if (rc == RC_NO_MATCH)
+      {
+        mqtt_scan_event_t event = {
+          .matched      = false,
+          .timestamp_us = esp_timer_get_time(),
+        };
+        xQueueSend(g_scan_queue, &event, 0);
+
+        fps_SetLed(FPM_LED_SCAN_FAILED);
+      }
+      else
+      {
+        /* Transient scan/sensor hiccup — display only, not a CEH
+           condition (not a WiFi/MQTT/resource/watchdog failure). */
+        ESP_LOGW(TAG, "scan error: %d", rc);
+        fps_SetLed(FPM_LED_ERROR_1);
+      }
+
+      vTaskDelay(pdMS_TO_TICKS(FPS_RESULT_DISPLAY_MS));
+      wdt_Reset();
+
+      if (matched)
+      {
+        /* SWS-FPM202: a match is a terminal event for the session — done
+           regardless of whether the MQTT publish itself happened or was
+           skipped (e.g. an unconfigured function code) — so there is no
+           reason to wait around for a possible follow-up scan. Go
+           straight back to idle. */
+        session_active = false;
+      }
+      else
+      {
+        /* No match / scan error: resume "awaiting finger" and actively
+           poll for a possible retry in the same session. */
+        fps_SetLed(FPM_LED_AWAITING_FINGER);
+        RC_t wait_rc = io_WaitFingerPresent(FPS_POST_SCAN_TIMEOUT_MS);
+        wdt_Reset();
+
+        if (wait_rc != RC_SUCCESS)
+        {
+          session_active = false;
+        }
+      }
+    }
+  }
 }
 
 /******************************************************************************/

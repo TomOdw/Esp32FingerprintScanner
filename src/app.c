@@ -2,8 +2,8 @@
  * @file       app.c
  * @brief      Main Application
  *
- *             Boot sequence, global FreeRTOS handle definitions, and
- *             scanner_task implementation.
+ *             Boot sequence and global FreeRTOS handle definitions. The
+ *             Normal-Mode scan task itself lives in fps.c (fps_ScanTask).
  *
  * @author     Tom Christ
  * @copyright  Copyright (c) 2026 Tom Christ; MIT License
@@ -56,6 +56,23 @@
 
 #define APP_SENSOR_BOOT_DELAY_MS 500U
 
+/** SWS-MOD202: how long the Normal-Mode boot sequence waits for WiFi
+ *  before proceeding to the MQTT stage. A bit above wifi.c's own internal
+ *  WIFI_STA_CONNECT_TIMEOUT_MS (30s) — on a genuine boot-time failure,
+ *  wifi.c's own state machine has already ceh_Fatal()'d (reboots) well
+ *  before this would otherwise elapse. */
+#define APP_WIFI_BOOT_WAIT_TIMEOUT_MS 35000U
+
+/** SWS-MOD004: settle time before the boot-time admin-finger identification
+ *  scan, mirroring webpage.c's SCAN_CAPTURE_SETTLE_MS — capturing the
+ *  instant presence is observed (rather than letting the finger seat
+ *  first) is known to produce a poor first image. */
+#define APP_BOOT_ADMIN_SCAN_SETTLE_MS  600U
+
+/** How long the "op success" LED confirmation is held once the boot-time
+ *  admin-finger override is confirmed, before proceeding into Setup-Mode. */
+#define APP_BOOT_ADMIN_LED_CONFIRM_MS 1000U
+
 static const char *TAG = "app";
 
 /******************************************************************************/
@@ -71,7 +88,6 @@ EventGroupHandle_t g_sys_events       = NULL;
 /*** Local function declaration                                               */
 /******************************************************************************/
 
-static void scanner_task(void *pvParam);
 static void webpage_start_task(void *pvParam);
 static void ceh_led_callback(ceh_err_t i_err);
 
@@ -125,12 +141,9 @@ void app_main(void)
 
   ceh_RegisterLed(ceh_led_callback);
 
-  if (boot_mode == APP_MODE_SETUP)
-  {
-    app_mode_EnterSetup(); /* SWS-MOD104: consume the setup-enter flag now */
-  }
-
   /* --- Phase 4: Create FreeRTOS resources --- */
+  /* Moved ahead of the SWS-MOD004 admin-finger check below: fps_Lock()
+     needs g_fpm_mutex to already exist. */
   g_fpm_mutex = xSemaphoreCreateBinary();
   if (g_fpm_mutex == NULL)
   {
@@ -153,6 +166,49 @@ void app_main(void)
     ceh_Fatal(CEH_ERR_RESOURCE);
   }
 
+  /* SWS-MOD004: a finger already resting on the sensor at boot, before
+     WiFi is even touched, overrides a would-be Normal-Mode boot into
+     Setup-Mode if it's the admin/master fingerprint — an escape hatch out
+     of a WiFi/MQTT connect-failure boot loop (misconfigured, not merely
+     unset, broker/credentials) with no other way to reach the webpage. A
+     raw presence read (not io_WaitFingerPresent(): there is no
+     "not-present" baseline yet this early in boot) so this costs nothing
+     when nobody is touching the sensor. */
+  if (boot_mode == APP_MODE_NORMAL && io_FpSensePresent())
+  {
+    vTaskDelay(pdMS_TO_TICKS(APP_BOOT_ADMIN_SCAN_SETTLE_MS));
+
+    uint16_t fp_id = 0U;
+    uint16_t score = 0U;
+    RC_t     scan_rc = RC_ERROR;
+    if (fps_Lock() == RC_SUCCESS)
+    {
+      scan_rc = fps_Scan(&fp_id, &score);
+      fps_Unlock();
+    }
+
+    if (scan_rc == RC_SUCCESS)
+    {
+      fpm_fingerprint_meta_t meta = {0};
+      fps_Lock();
+      fps_raw_read_meta(fp_id, &meta);
+      fps_Unlock();
+
+      if (meta.finger_id == FPS_ADMIN_FINGER_ID)
+      {
+        ESP_LOGI(TAG, "admin fingerprint present at boot; forcing Setup-Mode");
+        fps_SetLed(FPM_LED_OP_SUCCESS);
+        vTaskDelay(pdMS_TO_TICKS(APP_BOOT_ADMIN_LED_CONFIRM_MS));
+        boot_mode = APP_MODE_SETUP;
+      }
+    }
+  }
+
+  if (boot_mode == APP_MODE_SETUP)
+  {
+    app_mode_EnterSetup(); /* SWS-MOD104: consume the setup-enter flag now */
+  }
+
   /* --- Phase 5: Module pre-task init --- */
   if (wifi_Init() != RC_SUCCESS)
   {
@@ -172,7 +228,23 @@ void app_main(void)
 
   if (boot_mode == APP_MODE_NORMAL)
   {
-    rc = xTaskCreatePinnedToCore(scanner_task, "scanner",
+    /* SWS-MOD201/202: connect WiFi then MQTT before scanning starts,
+       showing the three-stage boot LED sequence. wifi_Task (already
+       created above) drives the actual WiFi connect; this just waits for
+       its result before moving on to MQTT. */
+    fps_SetLed(FPM_LED_DIAG_1);
+    wifi_WaitConnected(APP_WIFI_BOOT_WAIT_TIMEOUT_MS);
+
+    fps_SetLed(FPM_LED_DIAG_2);
+    if (mqtt_Init() != RC_SUCCESS)
+    {
+      ESP_LOGE(TAG, "mqtt_Init failed");
+      ceh_Fatal(CEH_ERR_MQTT_RUNTIME); /* confirmed: reuse MQTT_RUNTIME's blink code for boot failure too */
+    }
+
+    fps_SetLed(FPM_LED_OP_SUCCESS);
+
+    rc = xTaskCreatePinnedToCore(fps_ScanTask, "scanner",
                                  APP_SCANNER_TASK_STACK, NULL,
                                  APP_SCANNER_TASK_PRIO, NULL, 0);
     if (rc != pdPASS) { ESP_LOGE(TAG, "scanner task create failed"); ceh_Fatal(CEH_ERR_RESOURCE); }
@@ -209,69 +281,6 @@ void app_main(void)
 
 /******************************************************************************/
 
-static void scanner_task(void *pvParam)
-{
-  (void)pvParam;
-  wdt_RegisterTask();
-
-  for (;;)
-  {
-    fps_SetLed(FPM_LED_AWAITING_FINGER);
-
-    xSemaphoreTake(g_fp_sense_sem, portMAX_DELAY);
-
-    uint16_t fp_id = 0;
-    uint16_t score = 0;
-
-    if (fps_Lock() != RC_SUCCESS)
-    {
-      wdt_Reset();
-      continue;
-    }
-
-    RC_t rc = fps_Scan(&fp_id, &score);
-    fps_Unlock();
-
-    if (rc == RC_SUCCESS)
-    {
-      fpm_fingerprint_meta_t meta = {0};
-      fps_Lock();
-      fps_raw_read_meta(fp_id, &meta);
-      fps_Unlock();
-
-      mqtt_scan_event_t event = {
-        .fp_id        = fp_id,
-        .score        = score,
-        .uuid         = meta.uuid,
-        .matched      = true,
-        .timestamp_us = 0,  /* esp_timer_get_time() */
-      };
-      nvs_UserGetName(meta.uuid, event.name, sizeof(event.name));
-      xQueueSend(g_scan_queue, &event, 0);
-
-      fps_SetLed(FPM_LED_SCAN_SUCCESS);
-    }
-    else if (rc == RC_NO_MATCH)
-    {
-      mqtt_scan_event_t event = {
-        .matched      = false,
-        .timestamp_us = 0,  /* esp_timer_get_time() */
-      };
-      xQueueSend(g_scan_queue, &event, 0);
-
-      fps_SetLed(FPM_LED_SCAN_FAILED);
-    }
-    else
-    {
-      ESP_LOGW(TAG, "scan error: %d", rc);
-      fps_SetLed(FPM_LED_ERROR_1);
-    }
-
-    vTaskDelay(pdMS_TO_TICKS(1000));
-    wdt_Reset();
-  }
-}
-
 static void ceh_led_callback(ceh_err_t i_err)
 {
   switch (i_err)
@@ -285,8 +294,14 @@ static void ceh_led_callback(ceh_err_t i_err)
     case CEH_ERR_WIFI_BOOT:
       fps_SetLed(FPM_LED_ERROR_2);
       break;
-    default:
-      fps_SetLed(FPM_LED_ERROR_1);
+    case CEH_ERR_WIFI_RUNTIME:
+      fps_SetLed(FPM_LED_ERROR_3);
+      break;
+    case CEH_ERR_MQTT_RUNTIME:
+      fps_SetLed(FPM_LED_ERROR_4);
+      break;
+    case CEH_ERR_WATCHDOG:
+      fps_SetLed(FPM_LED_ERROR_5);
       break;
   }
 }

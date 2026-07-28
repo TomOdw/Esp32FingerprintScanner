@@ -13,6 +13,13 @@
 - [X] Specify ceh, implement, test
 - [X] Specify watchdog, implement, test
 - [X] Specify Normal-Mode
-- [ ] Implement Mqtt, CEH, WDT
-- [ ] Implement Normal-Mode
-- [ ] Test the implementation
+- [X] Implement Mqtt, CEH, WDT
+- [X] Implement Normal-Mode
+- [X] Test the implementation
+- [ ] Investigate MQTT/WIFI Runtime Errors
+- [ ] OTA Update
+- [ ] Solider curcuit board with sockets for esp & r503 connector
+- [ ] Run a longer test with this board
+- [ ] Design mounting behind the doorbell faceplate for curcuit board and 
+      doorbell
+- [ ] Fieldtest

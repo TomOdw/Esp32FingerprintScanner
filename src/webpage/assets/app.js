@@ -250,6 +250,7 @@ function navigate(screen) {
     'system-general': renderGeneral,
     'system-wifi': renderWifi,
     'system-mqtt': renderMqtt,
+    'system-errors': renderErrors,
     'system-reset': renderReset,
     users: renderUsers,
     fingerprints: renderFingerprints,
@@ -281,6 +282,7 @@ function renderSystemMenu() {
       <li><button data-nav="system-general">Scheduled Reboot</button></li>
       <li><button data-nav="system-wifi">Wifi Setup</button></li>
       <li><button data-nav="system-mqtt">Mqtt Setup</button></li>
+      <li><button data-nav="system-errors">View Errors</button></li>
       <li><button class="danger" data-nav="system-reset">Reset Device</button></li>
     </ul>
   `);
@@ -371,8 +373,6 @@ async function renderMqtt() {
       <form id="mqtt-form">
         <label>Broker IP</label>
         <input type="text" id="mqtt-broker" value="${esc(data.broker)}">
-        <label>Topic</label>
-        <input type="text" id="mqtt-topic" value="${esc(data.topic)}">
         <label>Username</label>
         <input type="text" id="mqtt-user" value="${esc(data.user)}">
         <label>Password ${data.has_password ? '(leave blank to keep current)' : ''}</label>
@@ -409,6 +409,12 @@ async function renderMqtt() {
 
     <div class="card">
       <h3>Function Codes (1-31)</h3>
+      <p class="muted">
+        Topic and message are published as-is, except for these placeholders,
+        substituted with the matched fingerprint's actual values wherever they
+        appear in either field: <code>{uuid}</code>, <code>{finger_id}</code>,
+        <code>{function_code}</code>, <code>{score}</code>, <code>{name}</code>.
+      </p>
       <div class="item-list">${fcRows}</div>
       <div class="actions"><button id="mqtt-add-fc">Add / Edit Function Code</button></div>
       <div id="fc-editor"></div>
@@ -420,7 +426,6 @@ async function renderMqtt() {
     e.preventDefault();
     const body = {
       broker: $('#mqtt-broker').value,
-      topic: $('#mqtt-topic').value,
       user: $('#mqtt-user').value,
       client_id: $('#mqtt-client-id').value,
       heartbeat: {
@@ -476,6 +481,44 @@ async function renderMqtt() {
       const fc = data.function_codes.find((x) => String(x.fc) === btn.dataset.editFc);
       openFcEditor(fc.fc, fc.topic, fc.message);
     });
+  });
+}
+
+/* ------------------------------------------------------------ View Errors */
+
+async function renderErrors() {
+  render(`${backButton('system')}<p class="muted">Loading...</p>`);
+  const data = await api('GET', '/api/system/errors');
+
+  const countRows = data.counts.map((c) => `
+    <div class="item-row"><span>${esc(c.name)} (${c.code})</span><span>${c.count}</span></div>`).join('');
+
+  const rows = data.errors.map((e) => `
+    <div class="item-row"><span>${esc(e)}</span></div>`).join('')
+    || '<p class="muted">No errors recorded.</p>';
+
+  render(`
+    ${backButton('system')}
+    <div class="card">
+      <h2>View Errors</h2>
+      <h3>Occurrences since last clear</h3>
+      <div class="item-list">${countRows}</div>
+      <h3>Log</h3>
+      <div class="item-list">${rows}</div>
+      <div class="actions"><button class="danger" id="errors-clear">Clear</button></div>
+      <div id="errors-status"></div>
+    </div>
+  `);
+  bindBack('system');
+
+  $('#errors-clear').addEventListener('click', async () => {
+    if (!confirm('Clear all recorded errors?')) { return; }
+    try {
+      await api('DELETE', '/api/system/errors');
+      renderErrors();
+    } catch (err) {
+      $('#errors-status').innerHTML = `<div class="status-box error">${esc(err.message)}</div>`;
+    }
   });
 }
 

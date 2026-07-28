@@ -62,6 +62,13 @@
 #define NVS_ERROR_MSG_MAX_LEN        129U
 #define NVS_ERROR_SLOT_COUNT          10U
 
+/** Error-code occurrence counters (SWS-NVS005): range must match ceh_err_t
+ *  (ceh/ceh.h) — 1..CEH_ERR_WATCHDOG. Kept as plain uint8_t bounds here
+ *  (not a ceh_err_t reference) to keep this module independent of ceh.h,
+ *  same as NVS_FC_MIN/MAX for MQTT function codes above. */
+#define NVS_ERROR_CODE_MIN            1U
+#define NVS_ERROR_CODE_MAX            7U
+
 /******************************************************************************/
 /*** Defines — default values                                                 */
 /******************************************************************************/
@@ -101,9 +108,6 @@ RC_t nvs_WifiSetApFallbackTimeout(uint32_t i_seconds);
 
 RC_t nvs_MqttGetBroker(char *o_buf, size_t i_len);
 RC_t nvs_MqttSetBroker(const char *i_broker);
-
-RC_t nvs_MqttGetTopic(char *o_buf, size_t i_len);
-RC_t nvs_MqttSetTopic(const char *i_topic);
 
 RC_t nvs_MqttGetUser(char *o_buf, size_t i_len);
 RC_t nvs_MqttSetUser(const char *i_user);
@@ -235,8 +239,27 @@ RC_t nvs_ErrorGet(uint8_t i_slot, char *o_buf, size_t i_len);
 RC_t nvs_ErrorGetCount(uint8_t *o_count);
 
 /**
- * @brief Clear all error FIFO entries.
+ * @brief Clear all error FIFO entries and all error-code occurrence
+ *        counters (SWS-NVS005) — "since last clear" applies to both.
  */
 RC_t nvs_ErrorClear(void);
+
+/**
+ * @brief Increment i_code's occurrence counter (SWS-NVS005).
+ *
+ * Called on every raw occurrence (every ceh_Fatal()/ceh_NonFatal() call
+ * for that code), independent of the FIFO's own SWS-CEH002 deduplication.
+ *
+ * @param[in] i_code  Error code, NVS_ERROR_CODE_MIN..NVS_ERROR_CODE_MAX.
+ */
+RC_t nvs_ErrorCodeIncrement(uint8_t i_code);
+
+/**
+ * @brief Read i_code's occurrence count since the last nvs_ErrorClear().
+ *
+ * @param[in]  i_code    Error code, NVS_ERROR_CODE_MIN..NVS_ERROR_CODE_MAX.
+ * @param[out] o_count   0 if the code has never occurred.
+ */
+RC_t nvs_ErrorCodeGetCount(uint8_t i_code, uint32_t *o_count);
 
 #endif /* NVS_APP_H_ */

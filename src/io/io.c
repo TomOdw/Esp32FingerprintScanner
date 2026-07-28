@@ -38,7 +38,7 @@
  * direct connection itself. The buffer was removed once the real causes
  * (busy-wait polling, and separately, a too-short UART read timeout for
  * search responses — see uart.c) were fixed. Configured as a falling-edge
- * interrupt input. The ISR gives g_fp_sense_sem to wake scanner_task.
+ * interrupt input. The ISR gives g_fp_sense_sem to wake fps_ScanTask.
  */
 #define IO_PIN_FP_SENSE    26
 

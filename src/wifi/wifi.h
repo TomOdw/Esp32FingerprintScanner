@@ -11,7 +11,9 @@
  *                 with a 30 s timeout. On timeout: switch to AP mode + start
  *                 ap_fallback_timeout timer (default 5 min) then reboot to
  *                 retry STA.
- *               - Post-connect disconnect: ESP-IDF auto-reconnect.
+ *               - Post-connect disconnect (SWS-MOD203): ESP-IDF auto-
+ *                 reconnect, with a 2-minute runtime timer; if it doesn't
+ *                 recover within that window, ceh_Fatal(CEH_ERR_WIFI_RUNTIME).
  *
  *             Sets/clears EVT_WIFI_CONNECTED and EVT_WIFI_AP_MODE on g_sys_events.
  *
@@ -84,5 +86,21 @@ void wifi_SetBootMode(wifi_boot_mode_t i_mode);
  * @param pvParam  Unused; pass NULL when creating the task.
  */
 void wifi_Task(void *pvParam);
+
+/**
+ * @brief Block until WiFi is connected (SWS-MOD202's boot sequencing).
+ *
+ * A thin wait on EVT_WIFI_CONNECTED with no side effects of its own — the
+ * actual boot-time connect/fallback/fatal-reboot logic is owned entirely
+ * by wifi_Task's internal state machine (see wifi.c). In the failure case
+ * that state machine has already rebooted the device (ceh_Fatal(),
+ * noreturn) by the time this wait would otherwise time out, so callers
+ * don't need to branch on a failure return here.
+ *
+ * @param[in] i_timeout_ms  How long to wait before giving up.
+ *
+ * @return RC_SUCCESS if connected, RC_TIMEOUT otherwise.
+ */
+RC_t wifi_WaitConnected(uint32_t i_timeout_ms);
 
 #endif /* WIFI_H_ */

@@ -28,12 +28,13 @@
 #include "fps/fps.h"
 #include "io/io.h"
 #include "timer/timer.h"
+#include "ceh/ceh.h"
 
 /******************************************************************************/
 /*** Macros and Defines                                                       */
 /******************************************************************************/
 
-#define WEBPAGE_MAX_URI_HANDLERS   24U
+#define WEBPAGE_MAX_URI_HANDLERS   28U
 #define WEBPAGE_HTTPD_STACK_SIZE  8192U
 
 #define ENROLL_STEP_TIMEOUT_MS   10000U
@@ -65,7 +66,7 @@
  *  requires a genuinely fresh touch (io_WaitFingerPresent() waits for a
  *  real edge, not just a level), which is what actually enforces "the
  *  user must lift and place again". */
-#define RESULT_DISPLAY_MS         1000U
+#define RESULT_DISPLAY_MS         2000U
 
 /** Minimum time the "scanning" LED stays visible during an enrollment
  *  capture, once presence is confirmed and the actual capture attempt is
@@ -156,6 +157,11 @@ static esp_err_t handle_post_wifi(httpd_req_t *req);
 static esp_err_t handle_get_mqtt(httpd_req_t *req);
 static esp_err_t handle_post_mqtt(httpd_req_t *req);
 
+/* --- system: errors --- */
+static const char *ceh_err_name(uint8_t i_code);
+static esp_err_t handle_get_errors(httpd_req_t *req);
+static esp_err_t handle_delete_errors(httpd_req_t *req);
+
 /* --- system: reset / exit --- */
 static esp_err_t handle_reset_start(httpd_req_t *req);
 static esp_err_t handle_reset_scan(httpd_req_t *req);
@@ -208,6 +214,8 @@ RC_t webpage_Init(webpage_mode_t i_mode)
     { .uri = "/api/system/wifi",                .method = HTTP_POST,   .handler = handle_post_wifi },
     { .uri = "/api/system/mqtt",                .method = HTTP_GET,    .handler = handle_get_mqtt },
     { .uri = "/api/system/mqtt",                .method = HTTP_POST,   .handler = handle_post_mqtt },
+    { .uri = "/api/system/errors",               .method = HTTP_GET,    .handler = handle_get_errors },
+    { .uri = "/api/system/errors",               .method = HTTP_DELETE, .handler = handle_delete_errors },
     { .uri = "/api/system/reset/start",         .method = HTTP_POST,   .handler = handle_reset_start },
     { .uri = "/api/system/reset/scan",          .method = HTTP_POST,   .handler = handle_reset_scan },
     { .uri = "/api/system/exit",                .method = HTTP_POST,   .handler = handle_exit },
@@ -573,13 +581,11 @@ static esp_err_t handle_post_wifi(httpd_req_t *req)
 static esp_err_t handle_get_mqtt(httpd_req_t *req)
 {
   char broker[NVS_BROKER_MAX_LEN]       = {0};
-  char topic[NVS_TOPIC_MAX_LEN]         = {0};
   char user[NVS_MQTT_USER_MAX_LEN]      = {0};
   char pass[NVS_MQTT_PASS_MAX_LEN]      = {0};
   char client_id[NVS_CLIENT_ID_MAX_LEN] = {0};
 
   nvs_MqttGetBroker(broker, sizeof(broker));
-  nvs_MqttGetTopic(topic, sizeof(topic));
   nvs_MqttGetUser(user, sizeof(user));
   RC_t pass_rc = nvs_MqttGetPass(pass, sizeof(pass));
   nvs_MqttGetClientId(client_id, sizeof(client_id));
@@ -602,7 +608,6 @@ static esp_err_t handle_get_mqtt(httpd_req_t *req)
 
   cJSON *root = cJSON_CreateObject();
   cJSON_AddStringToObject(root, "broker", broker);
-  cJSON_AddStringToObject(root, "topic", topic);
   cJSON_AddStringToObject(root, "user", user);
   cJSON_AddBoolToObject(root, "has_password", (pass_rc == RC_SUCCESS) && (pass[0] != '\0'));
   cJSON_AddStringToObject(root, "client_id", client_id);
@@ -653,10 +658,6 @@ static esp_err_t handle_post_mqtt(httpd_req_t *req)
   if (cJSON_IsString(item = cJSON_GetObjectItemCaseSensitive(body, "broker")))
   {
     if (nvs_MqttSetBroker(item->valuestring) != RC_SUCCESS) { rc = RC_ERROR; }
-  }
-  if (cJSON_IsString(item = cJSON_GetObjectItemCaseSensitive(body, "topic")))
-  {
-    if (nvs_MqttSetTopic(item->valuestring) != RC_SUCCESS) { rc = RC_ERROR; }
   }
   if (cJSON_IsString(item = cJSON_GetObjectItemCaseSensitive(body, "user")))
   {
@@ -738,6 +739,72 @@ static esp_err_t handle_post_mqtt(httpd_req_t *req)
   }
 
   cJSON_Delete(body);
+  return (rc == RC_SUCCESS) ? send_ok(req) : server_error(req, "nvs_write_failed", NULL);
+}
+
+/******************************************************************************/
+/*** Local function implementation — system: errors                         */
+/******************************************************************************/
+
+static const char *ceh_err_name(uint8_t i_code)
+{
+  switch ((ceh_err_t)i_code)
+  {
+    case CEH_ERR_FPM_INIT:     return "FPM_INIT";
+    case CEH_ERR_NVS_INIT:     return "NVS_INIT";
+    case CEH_ERR_RESOURCE:     return "RESOURCE";
+    case CEH_ERR_WIFI_BOOT:    return "WIFI_BOOT";
+    case CEH_ERR_WIFI_RUNTIME: return "WIFI_RUNTIME";
+    case CEH_ERR_MQTT_RUNTIME: return "MQTT_RUNTIME";
+    case CEH_ERR_WATCHDOG:     return "WATCHDOG";
+    default:                   return "UNKNOWN";
+  }
+}
+
+/**
+ * @brief SWS-WP102 "View Errors": list the NVS error FIFO (SWS-NVS004),
+ * newest entry first, plus each error code's occurrence count since the
+ * last clear (SWS-NVS005).
+ */
+static esp_err_t handle_get_errors(httpd_req_t *req)
+{
+  uint8_t count = 0;
+  nvs_ErrorGetCount(&count);
+
+  cJSON *root = cJSON_CreateObject();
+  cJSON *arr  = cJSON_AddArrayToObject(root, "errors");
+
+  for (uint8_t i = count; i > 0; i--)
+  {
+    char msg[NVS_ERROR_MSG_MAX_LEN] = {0};
+    if (nvs_ErrorGet(i - 1U, msg, sizeof(msg)) == RC_SUCCESS)
+    {
+      cJSON_AddItemToArray(arr, cJSON_CreateString(msg));
+    }
+  }
+
+  cJSON *counts = cJSON_AddArrayToObject(root, "counts");
+  for (uint8_t code = NVS_ERROR_CODE_MIN; code <= NVS_ERROR_CODE_MAX; code++)
+  {
+    uint32_t occurrences = 0U;
+    nvs_ErrorCodeGetCount(code, &occurrences);
+
+    cJSON *entry = cJSON_CreateObject();
+    cJSON_AddNumberToObject(entry, "code", code);
+    cJSON_AddStringToObject(entry, "name", ceh_err_name(code));
+    cJSON_AddNumberToObject(entry, "count", occurrences);
+    cJSON_AddItemToArray(counts, entry);
+  }
+
+  return send_json(req, root);
+}
+
+/**
+ * @brief SWS-WP102 "View Errors" Clear control: empty the NVS error FIFO.
+ */
+static esp_err_t handle_delete_errors(httpd_req_t *req)
+{
+  RC_t rc = nvs_ErrorClear();
   return (rc == RC_SUCCESS) ? send_ok(req) : server_error(req, "nvs_write_failed", NULL);
 }
 

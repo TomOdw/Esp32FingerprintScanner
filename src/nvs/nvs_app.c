@@ -38,7 +38,6 @@ static const char *KEY_AP_TIMEOUT  = "ap_timeout";
 
 /* mqtt_cfg keys — fixed entries */
 static const char *KEY_BROKER      = "broker";
-static const char *KEY_TOPIC       = "topic";
 static const char *KEY_MQTT_USER   = "user";
 static const char *KEY_MQTT_PASS   = "pass";
 static const char *KEY_CLIENT_ID   = "client_id";
@@ -245,18 +244,6 @@ RC_t nvs_MqttSetBroker(const char *i_broker)
 {
   if (i_broker == NULL) return RC_INVALID_ARG;
   return set_str(s_mqtt_h, KEY_BROKER, i_broker);
-}
-
-RC_t nvs_MqttGetTopic(char *o_buf, size_t i_len)
-{
-  if (o_buf == NULL || i_len == 0U) return RC_INVALID_ARG;
-  return get_str(s_mqtt_h, KEY_TOPIC, o_buf, i_len);
-}
-
-RC_t nvs_MqttSetTopic(const char *i_topic)
-{
-  if (i_topic == NULL) return RC_INVALID_ARG;
-  return set_str(s_mqtt_h, KEY_TOPIC, i_topic);
 }
 
 RC_t nvs_MqttGetUser(char *o_buf, size_t i_len)
@@ -593,6 +580,36 @@ RC_t nvs_ErrorClear(void)
 {
   nvs_set_u8(s_errors_h, KEY_ERR_HEAD, 0U);
   nvs_set_u8(s_errors_h, KEY_ERR_CNT,  0U);
+
+  for (uint8_t code = NVS_ERROR_CODE_MIN; code <= NVS_ERROR_CODE_MAX; code++)
+  {
+    char key[16];
+    snprintf(key, sizeof(key), "errcnt_%u", (unsigned)code);
+    nvs_set_u32(s_errors_h, key, 0U);
+  }
+
   esp_err_t err = nvs_commit(s_errors_h);
   return (err == ESP_OK) ? RC_SUCCESS : RC_ERROR;
+}
+
+RC_t nvs_ErrorCodeIncrement(uint8_t i_code)
+{
+  if (i_code < NVS_ERROR_CODE_MIN || i_code > NVS_ERROR_CODE_MAX) return RC_INVALID_ARG;
+
+  char key[16];
+  snprintf(key, sizeof(key), "errcnt_%u", (unsigned)i_code);
+
+  uint32_t count = 0U;
+  get_u32(s_errors_h, key, 0U, &count);
+  return set_u32(s_errors_h, key, count + 1U);
+}
+
+RC_t nvs_ErrorCodeGetCount(uint8_t i_code, uint32_t *o_count)
+{
+  if (o_count == NULL) return RC_INVALID_ARG;
+  if (i_code < NVS_ERROR_CODE_MIN || i_code > NVS_ERROR_CODE_MAX) return RC_INVALID_ARG;
+
+  char key[16];
+  snprintf(key, sizeof(key), "errcnt_%u", (unsigned)i_code);
+  return get_u32(s_errors_h, key, 0U, o_count);
 }

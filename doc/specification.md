@@ -33,6 +33,17 @@
 - [X] SWS-NVS004  Error-information structure:
                   - 10 Slots of Error information (FIFO) where each slots contains
                     an error message.
+- [X] SWS-NVS005  Error-code occurrence counters: alongside the error FIFO
+                  (SWS-NVS004), NVS also tracks, per CEH error code
+                  (ceh_err_t — see Central Error Handler), a running count
+                  of how many times that code has been raised. This counts
+                  every raw occurrence (every ceh_Fatal()/ceh_NonFatal()
+                  call for that code), independent of the FIFO's own
+                  SWS-CEH002 deduplication — a condition that stays ongoing
+                  for a long time and only ever produces one FIFO entry
+                  still increments its counter on every occurrence. All
+                  counters are reset together with the FIFO by
+                  nvs_ErrorClear() — "since last clear" applies to both.
 
 
 ## Wifi
@@ -55,15 +66,15 @@
 
 
 ## Mqtt
-- [ ] SWS-MQT01   The device is an mqtt client. On init a cfg structure is passed,
+- [X] SWS-MQT01   The device is an mqtt client. On init a cfg structure is passed,
                   with, a broker ip, username, password, last-will-topic and message,
                   heartbeat topic, message and interval.
                   The blocking init function returns with an error, if connection
                   to the broker failed.
-- [ ] SWS-MQT02   There will be a system event triggered, if the connection to
+- [X] SWS-MQT02   There will be a system event triggered, if the connection to
                   the brokter fails during device operation.
-- [ ] SWS-MQT03   The heartbeat is send automatically with the configured interval.
-- [ ] SWS-MQT04   Scan-result publishing: when the fingerprint module identifies
+- [X] SWS-MQT03   The heartbeat is send automatically with the configured interval.
+- [X] SWS-MQT04   Scan-result publishing: when the fingerprint module identifies
                   a match during Normal-Mode scanning (SWS-FPM202), the matched
                   fingerprint's function code selects one of the 31 NVS-configured
                   (topic, message) pairs (SWS-NVS002). Both the topic and the
@@ -83,7 +94,7 @@
                   placeholders substituted in wherever used. A scan with no
                   match produces no publish at all (there is no function code
                   to select a (topic, message) pair from).
-- [ ] SWS-MQT05   There is currently no need for supporting topic subscription
+- [X] SWS-MQT05   There is currently no need for supporting topic subscription
 
 
 ## Fingerprint Module
@@ -229,10 +240,10 @@
                     finger" so the frontend loops back for another attempt.
 
 ### Normal Mode
-- [ ] SWS-FPM201  In Normal mode, the fingerprint module is used for scanning
+- [X] SWS-FPM201  In Normal mode, the fingerprint module is used for scanning
                   only — no enrollment, no library management (Setup-Mode-only,
                   see SWS-WP104.3).
-- [ ] SWS-FPM202  Scan loop:
+- [X] SWS-FPM202  Scan loop:
                   - While idle, the task blocks on the existing
                     interrupt-driven g_fp_sense_sem, using effectively no CPU
                     time. This semaphore only wakes the task on a fresh touch
@@ -246,23 +257,53 @@
                     visible LED glitch for an event that has, in fact,
                     already happened.
                   - The scan result LED is shown per the general pattern
-                    already specified in SWS-FPM104. Once that result display
-                    is done (or if the scan didn't produce a result because
-                    contact was already lost again), "awaiting finger"
+                    already specified in SWS-FPM104.
+                  - A successful match (regardless of whether the resulting
+                    MQTT publish actually happened or was skipped, e.g. an
+                    unconfigured function code — SWS-MQT04/SWS-FPM203) is a
+                    terminal event for the session: once its result display
+                    is done, the LED reverts straight to the Normal-Mode
+                    baseline (off) and the task goes back to blocking on
+                    g_fp_sense_sem (idle). There is no follow-up polling
+                    wait after a match — nothing more to gain from waiting
+                    around for another scan once the touch has already been
+                    identified.
+                  - A no-match or scan error, on the other hand, is not
+                    necessarily the end of the attempt (contact may have
+                    been marginal, or it may genuinely be the wrong
+                    finger and the user wants to retry immediately): once
+                    that result display is done, "awaiting finger"
                     (breathing blue) resumes and the task actively polls via
                     io_WaitFingerPresent() (io.c) — the same debounced,
                     edge-requiring primitive Setup-Mode uses (SWS-FPM102) —
-                    in case the same session involves more than one scan
-                    back-to-back.
-                  - If io_WaitFingerPresent() times out after 10s with no
+                    in case the same session involves a retry. If
+                    io_WaitFingerPresent() times out after 10s with no
                     further finger placed, the LED reverts to the
                     Normal-Mode baseline (off) and the task goes back to
                     blocking on g_fp_sense_sem (idle) until the next fresh
                     touch wakes it.
-- [ ] SWS-FPM203  On a successful match, the matched fingerprint's metadata
+- [X] SWS-FPM203  On a successful match, the matched fingerprint's metadata
                   (uuid, finger_id, function_code), the resolved display
                   name, and the match score are used to publish an MQTT
                   message (SWS-MQT04). On no match, nothing is published.
+- [X] SWS-FPM204  Admin/master fingerprint override: if the fingerprint
+                  matched during Normal-Mode scanning (SWS-FPM202) is the
+                  admin/master fingerprint (SWS-WP201: finger_id 15), it is
+                  not treated as a regular scan result — no MQTT message is
+                  published (SWS-FPM203/SWS-MQT04 do not apply to it).
+                  Instead, after a brief LED confirmation ("op success",
+                  held for the same fixed display duration as any other
+                  scan result), the device sets the setup-enter-flag
+                  (SWS-NVS002, read by SWS-MOD002) and reboots via a plain,
+                  unconditional esp_restart() — not routed through the
+                  Central Error Handler, since this isn't an error
+                  condition (mirrors SWS-WDT002's scheduled reboot). This
+                  gives an admin a way to re-enter Setup-Mode (e.g. to
+                  reconfigure WiFi/MQTT) without physical access to the
+                  device's boot process, by presenting the same master
+                  fingerprint used for First-Run-Mode enrollment
+                  (SWS-WP201) and Setup-Mode's Reset Device admin
+                  verification (SWS-FPM104).
 
 
 ## Webpage Interface
@@ -287,7 +328,16 @@
                     - Reset Device, queries the user for the admin-fingerprint,
                       if scanned, resets nvs and the fpm.
                     - View Errors: shows the NVS error FIFO entries
-                      (SWS-NVS004 / SWS-CEH002).
+                      (SWS-NVS004 / SWS-CEH002) and, per error code, how
+                      many times it has occurred since the last clear
+                      (SWS-NVS005), with a Clear control that empties both
+                      (nvs_ErrorClear()).
+                   NOTE: was previously marked [X] as a whole while the "View
+                   Errors" subentry had never actually been built (no backend
+                   endpoint, no webpage menu item) — flipped back to [ ]
+                   until that subentry is implemented and verified on real
+                   hardware too, per this repo's checkbox convention (every
+                   subentry, not just most of them).
 - [X] SWS-WP103    User Settings with subentries
 - [X] SWS-WP103.1  List users: Get user names with uuid from nvs.
 - [X] SWS-WP103.2  Edit user: Querries for uuid, changes name, stores changes
@@ -323,7 +373,7 @@
 
 
 ## Watchdog
-- [ ] SWS-WDT001  Cooperative software watchdog: each long-running task
+- [X] SWS-WDT001  Cooperative software watchdog: each long-running task
                   registers itself (wdt_RegisterTask()) and periodically
                   resets its own entry (wdt_Reset()) from within its normal
                   loop. A dedicated monitor task periodically checks every
@@ -340,7 +390,7 @@
                   enabled in parallel, in case the software monitor task
                   itself freezes too — it won't have the graceful blink/log
                   sequence, but it guarantees the device doesn't hang forever.
-- [ ] SWS-WDT002  Scheduled reboot: the watchdog module also owns the
+- [X] SWS-WDT002  Scheduled reboot: the watchdog module also owns the
                   scheduled-reboot feature (SWS-NVS002's "Scheduled Reboot
                   Time in minutes", 0 = disabled) — a plain, unconditional
                   esp_restart() once the configured interval has elapsed
@@ -349,11 +399,11 @@
 
 
 ## Central Error Handler
-- [ ] SWS-CEH001  The Central Error Handler (CEH) is called whenever a
+- [X] SWS-CEH001  The Central Error Handler (CEH) is called whenever a
                   condition needs to be surfaced and/or recorded: a WiFi or
                   MQTT connection that could not be (re-)established, a
                   resource allocation failure, or a watchdog trip (Watchdog).
-- [ ] SWS-CEH002  Every CEH call — fatal or not — records an entry in the
+- [X] SWS-CEH002  Every CEH call — fatal or not — records an entry in the
                   NVS error FIFO (SWS-NVS004, nvs_ErrorPush()), so the
                   history of what went wrong is visible later via the
                   webpage (SWS-WP102's new "View Errors" entry). Deduplicated:
@@ -364,12 +414,12 @@
                   error occurs. Otherwise a single persistent condition would
                   flood the 10-slot FIFO and push out genuinely distinct,
                   older history.
-- [ ] SWS-CEH003  Non-fatal errors: logged via SWS-CEH002 only — no LED
+- [X] SWS-CEH003  Non-fatal errors: logged via SWS-CEH002 only — no LED
                   change, no reboot. Used when a condition is recoverable and
                   a retry is already in progress (e.g. a dropped WiFi or MQTT
                   connection while the device is still trying to reconnect —
                   see SWS-MOD203).
-- [ ] SWS-CEH004  Fatal errors (ceh_Fatal()): in addition to SWS-CEH002, the
+- [X] SWS-CEH004  Fatal errors (ceh_Fatal()): in addition to SWS-CEH002, the
                   sensor LED shows the error's blink code (SWS-FPM003 / the
                   existing ERROR_1..5 LED states), then goes off for a 2s
                   pause, then shows the same blink code again — repeating for
@@ -380,7 +430,7 @@
                   the LED — but a log message (ESP_LOGE) is still printed
                   first either way, so there's always at least a serial-console
                   trail even when nothing can be shown on the LED.
-- [ ] SWS-CEH005  Fatal error code -> blink code mapping:
+- [X] SWS-CEH005  Fatal error code -> blink code mapping:
                   - CEH_ERR_RESOURCE     -> ERROR_1 (existing)
                   - CEH_ERR_WIFI_BOOT    -> ERROR_2 (existing)
                   - CEH_ERR_WIFI_RUNTIME -> ERROR_3 (new, SWS-MOD203)
@@ -403,6 +453,35 @@
                   a single OR over setup_flag / empty ssid / empty broker.
 - [X] SWS-MOD003  If non of the conditions for setup mode are fulfilled,
                   normal-mode is entered.
+- [X] SWS-MOD004  Boot-time admin-finger override: after fps_Init()
+                  succeeds (sensor + LED available) but before WiFi is
+                  initialised, if app_mode_Decide() (SWS-MOD002/003) chose
+                  Normal-Mode, the device does a single, non-blocking check
+                  for a finger already resting on the sensor — a raw
+                  presence read (io_FpSensePresent()), not the debounced,
+                  edge-requiring io_WaitFingerPresent(): there is no
+                  "not-present" baseline to compare against this early in
+                  boot, and the finger may already have been resting there
+                  through several prior failed boot attempts. If a finger
+                  is present, one identification scan is attempted; if it
+                  matches the admin/master fingerprint (SWS-WP201:
+                  finger_id 15), Normal-Mode's boot sequence (SWS-MOD201/
+                  202) is skipped and the device instead proceeds as if
+                  Setup-Mode had been decided (AP wifi, webpage interface).
+                  No finger present, or no match: normal boot continues
+                  unaffected — this adds no delay in the common case of
+                  nobody touching the sensor.
+                  This exists as an escape hatch out of a WiFi/MQTT
+                  connect-failure boot loop (SWS-MOD202 / SWS-CEH004): if
+                  the configured broker/credentials are wrong (not merely
+                  unset — an unset broker already routes to Setup-Mode via
+                  SWS-MOD002), the device would otherwise keep rebooting
+                  indefinitely with no way to reach the webpage and fix the
+                  configuration. Complements SWS-FPM204, which covers the
+                  same admin-finger-to-Setup-Mode behaviour once the device
+                  has already reached Normal-Mode's scan loop; this entry
+                  covers the boot-time window before that loop — and
+                  before WiFi/MQTT — is even reached.
 
 ### Setup Mode
 - [X] SWS-MOD101  Entering Setup mode resets the setup-enter-flag in NVS
@@ -430,17 +509,17 @@
                   restore Diagnostic State 0 afterward).
 
 ### Normal Mode
-- [ ] SWS-MOD201  On entering Normal mode, the device connects to the WiFi
+- [X] SWS-MOD201  On entering Normal mode, the device connects to the WiFi
                   network and MQTT broker configured in NVS (both are
                   guaranteed non-empty — otherwise SWS-MOD002 would have
                   routed to Setup mode instead).
-- [ ] SWS-MOD202  Boot LED sequence:
+- [X] SWS-MOD202  Boot LED sequence:
                   - Diagnostic State 1 (flashing) while connecting to WiFi.
                   - Diagnostic State 2 (breathing) while connecting to the
                     MQTT broker (once WiFi is up).
                   - "op success" once both are connected, then the device
                     proceeds to normal scanning operation (SWS-FPM202).
-- [ ] SWS-MOD203  If the WiFi or MQTT connection is lost during operation
+- [X] SWS-MOD203  If the WiFi or MQTT connection is lost during operation
                   (not during the initial boot sequence in SWS-MOD202): a
                   non-fatal CEH entry is recorded (SWS-CEH003) and the device
                   attempts to reconnect for up to 2 minutes. If reconnection
@@ -448,7 +527,7 @@
                   it does not, ceh_Fatal() is called (SWS-CEH004) with the
                   matching runtime-connection-lost error code (SWS-CEH005),
                   rebooting the device after showing the blink code.
-- [ ] SWS-MOD204  While connected and idle, the device sends MQTT heartbeats
+- [X] SWS-MOD204  While connected and idle, the device sends MQTT heartbeats
                   per the configured interval (if enabled, SWS-NVS002) and
                   otherwise waits for the user to place a finger on the
                   sensor (SWS-FPM202).

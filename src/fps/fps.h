@@ -105,7 +105,7 @@ RC_t fps_Unlock(void);
 /**
  * @brief Scan the currently presented finger and match against the library.
  *
- * Acquires the mutex internally. Intended for use by scanner_task after the
+ * Acquires the mutex internally. Intended for use by fps_ScanTask after the
  * FP-sense GPIO interrupt fires.
  * 
  * @warning Protected by Mutex, use fps_Lock() and fps_Unlock()
@@ -266,5 +266,27 @@ RC_t fps_EnrollCommitAndTag(const fpm_fingerprint_meta_t *meta, uint16_t *o_id);
  *         RC_TIMEOUT (no finger presented within i_timeout_ms).
  */
 RC_t fps_ScanStep(uint32_t i_timeout_ms, uint16_t *o_id, uint16_t *o_score);
+
+/******************************************************************************/
+/*** API Functions — Normal-Mode scan task                                    */
+/******************************************************************************/
+
+/**
+ * @brief Normal-Mode fingerprint scan task (SWS-FPM201/202/203).
+ *
+ * Idles blocked on g_fp_sense_sem (the FP-sense GPIO interrupt's wake
+ * signal). On wake, attempts a scan directly — no "awaiting finger" LED is
+ * shown first, since the wake itself already means a finger just made
+ * contact. Publishes a match (or no-match) event to g_scan_queue for
+ * mqtt_Task. After showing the result for a fixed display time, polls
+ * io_WaitFingerPresent() for a possible next scan in the same session;
+ * once that times out, reverts to the idle baseline and blocks on the
+ * semaphore again.
+ *
+ * Intended to run pinned to Core 0 at priority 5.
+ *
+ * @param pvParam  Unused; pass NULL when creating the task.
+ */
+void fps_ScanTask(void *pvParam);
 
 #endif /* FPS_H_ */

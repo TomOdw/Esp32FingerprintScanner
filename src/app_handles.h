@@ -63,7 +63,7 @@ extern SemaphoreHandle_t g_fpm_mutex;
 extern SemaphoreHandle_t g_fp_sense_sem;
 
 /**
- * @brief Queue of scan results from scanner_task to mqtt_task.
+ * @brief Queue of scan results from fps_ScanTask to mqtt_Task.
  *
  * Item type: mqtt_scan_event_t. Depth: 4.
  */

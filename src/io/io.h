@@ -5,7 +5,7 @@
  *             Manages two GPIO pins:
  *               - Sensor power pin (output): drives sensor VCC via transistor.
  *               - FP sense pin (input/interrupt): R503 touch-detect output.
- *                 The ISR gives g_fp_sense_sem to wake scanner_task.
+ *                 The ISR gives g_fp_sense_sem to wake fps_ScanTask.
  *
  *             io_Init() must be called before uart_Init() so that the sensor
  *             is powered before any UART communication begins.
@@ -50,7 +50,7 @@ RC_t io_Init(void);
  * @brief Read the current, instantaneous state of the FP sense pin.
  *
  * Unlike g_fp_sense_sem (an edge-triggered, consume-once signal owned by
- * scanner_task in Normal-Mode), this is a plain level read safe to poll
+ * fps_ScanTask in Normal-Mode), this is a plain level read safe to poll
  * from any task at any time. This is a single raw read with no filtering
  * or debounce of its own — a lone call can reflect brief contact bounce or
  * noise. For a debounced result, use io_WaitFingerPresent() instead, which

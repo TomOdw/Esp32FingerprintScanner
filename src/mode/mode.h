@@ -33,7 +33,7 @@
  */
 typedef enum
 {
-  APP_MODE_NORMAL, /**< Normal operation: STA wifi, scanner_task, mqtt_Task. */
+  APP_MODE_NORMAL, /**< Normal operation: STA wifi, fps_ScanTask, mqtt_Task. */
   APP_MODE_SETUP,  /**< Setup: AP wifi, webpage interface, no scanning/mqtt. */
 } app_mode_t;
 

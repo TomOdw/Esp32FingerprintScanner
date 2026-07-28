@@ -38,6 +38,14 @@
 #define WIFI_AP_CHANNEL   1U
 #define WIFI_AP_MAX_CONN  4U
 
+/** wifi_Task's own loop is a tight 1s vTaskDelay; a small multiple of that
+ *  is enough headroom for the software watchdog. */
+#define WIFI_TASK_WDT_TIMEOUT_MS  5000U
+
+/** SWS-MOD203: how long a runtime WiFi drop (post-boot) is given to
+ *  reconnect before escalating to a fatal reboot. */
+#define WIFI_RUNTIME_DISCONNECT_TIMEOUT_MS  120000U
+
 /******************************************************************************/
 /*** Local variables                                                          */
 /******************************************************************************/
@@ -50,8 +58,9 @@ static const char *TAG = "wifi_mgmt";
 
 static wifi_boot_mode_t s_boot_mode = WIFI_BOOT_AP;  /* fail-safe default */
 
-static timer_handle_t s_connect_timeout_handle = NULL;
-static timer_handle_t s_ap_fallback_handle      = NULL;
+static timer_handle_t s_connect_timeout_handle     = NULL;
+static timer_handle_t s_ap_fallback_handle         = NULL;
+static timer_handle_t s_runtime_disconnect_handle  = NULL;
 
 /******************************************************************************/
 /*** Local function declaration                                               */
@@ -67,6 +76,7 @@ static void ip_event_handler(void *arg, esp_event_base_t base,
 
 static void connect_timeout_cb(void *i_arg);
 static void ap_fallback_cb(void *i_arg);
+static void runtime_disconnect_timeout_cb(void *i_arg);
 
 /******************************************************************************/
 /*** API function implementation                                              */
@@ -145,7 +155,7 @@ void wifi_SetBootMode(wifi_boot_mode_t i_mode)
 void wifi_Task(void *pvParam)
 {
   (void)pvParam;
-  wdt_RegisterTask();
+  wdt_RegisterTask(WIFI_TASK_WDT_TIMEOUT_MS);
 
   if (s_boot_mode == WIFI_BOOT_AP)
   {
@@ -179,6 +189,13 @@ void wifi_Task(void *pvParam)
     wdt_Reset();
     vTaskDelay(pdMS_TO_TICKS(1000));
   }
+}
+
+RC_t wifi_WaitConnected(uint32_t i_timeout_ms)
+{
+  EventBits_t bits = xEventGroupWaitBits(g_sys_events, EVT_WIFI_CONNECTED, pdFALSE, pdTRUE,
+                                         pdMS_TO_TICKS(i_timeout_ms));
+  return ((bits & EVT_WIFI_CONNECTED) != 0U) ? RC_SUCCESS : RC_TIMEOUT;
 }
 
 /******************************************************************************/
@@ -255,9 +272,19 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
       EventBits_t bits = xEventGroupGetBits(g_sys_events);
       if ((bits & EVT_WIFI_CONNECTED) != 0U)
       {
-        /* SWS-WIF04: connection dropped during device operation. */
+        /* SWS-WIF04/SWS-MOD203: connection dropped during device
+           operation (as opposed to still-connecting boot-time churn,
+           already handled by s_connect_timeout_handle) — retry for up to
+           2 minutes before escalating to a fatal reboot. */
         xEventGroupClearBits(g_sys_events, EVT_WIFI_CONNECTED);
         ESP_LOGW(TAG, "WiFi disconnected after prior connect; reconnecting");
+        ceh_NonFatal(CEH_ERR_WIFI_RUNTIME, "wifi disconnected, reconnecting");
+        if (timer_OneShot(WIFI_RUNTIME_DISCONNECT_TIMEOUT_MS, runtime_disconnect_timeout_cb,
+                          NULL, &s_runtime_disconnect_handle) != RC_SUCCESS)
+        {
+          ESP_LOGE(TAG, "failed to arm runtime-disconnect timer");
+          ceh_Fatal(CEH_ERR_RESOURCE);
+        }
       }
       esp_wifi_connect();
       break;
@@ -285,6 +312,10 @@ static void ip_event_handler(void *arg, esp_event_base_t base,
 
   timer_Cancel(s_connect_timeout_handle);
   s_connect_timeout_handle = NULL;
+
+  timer_Cancel(s_runtime_disconnect_handle);
+  s_runtime_disconnect_handle = NULL;
+  ceh_ClearCondition(CEH_ERR_WIFI_RUNTIME);
 
   xEventGroupSetBits(g_sys_events, EVT_WIFI_CONNECTED);
 
@@ -318,4 +349,11 @@ static void ap_fallback_cb(void *i_arg)
   (void)i_arg;
   ESP_LOGE(TAG, "AP fallback timeout expired; rebooting to retry STA");
   ceh_Fatal(CEH_ERR_WIFI_BOOT);
+}
+
+static void runtime_disconnect_timeout_cb(void *i_arg)
+{
+  (void)i_arg;
+  ESP_LOGE(TAG, "WiFi runtime reconnect timed out; rebooting");
+  ceh_Fatal(CEH_ERR_WIFI_RUNTIME);
 }
